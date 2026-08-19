@@ -3,8 +3,11 @@
 
 Scans a MiSTer SD card and compares files against selected public Downloader
 DB manifests. By default it scans the entire SD card recursively. It reports
-public, modified, and extra files and can stage the extras for review. It
-never uploads anything by itself.
+public, modified, and extra files and can stage extras for review or upload
+them directly to the configured ButtHole GitHub repository.
+
+GitHub credentials are read from a local token file and are never written to
+the repository, report, commit message, or Git remote URL.
 """
 import argparse, hashlib, json, os, shutil, subprocess, sys, tempfile, time, urllib.request, zipfile
 from pathlib import Path
@@ -17,20 +20,24 @@ PUBLIC_DBS = [
 DEFAULT_SD = "/media/fat"
 DEFAULT_PREFIXES = ("_Arcade/", "_Console/", "_Computer/", "_Other/", "cores/", "Scripts/", "MiSTer/", "games/")
 DEFAULT_MAX_FILE_MB = 95
+DEFAULT_GITHUB_REPO = "modology/ButtHole"
+DEFAULT_TOKEN_FILE = "/media/fat/Scripts/.github_token"
 BETA_WORDS = ("jtbeta", "beta", "patreon", "premium")
+EXCLUDED_UPLOAD_NAMES = {".github_token", "mister_extras_report.json", "EXTRAS_SHA256SUMS"}
 
 def die(msg):
     print(f"ERROR: {msg}", file=sys.stderr); raise SystemExit(1)
 
-def run(cmd):
+def run(cmd, cwd=None, quiet=False):
     try:
-        return subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return subprocess.run(cmd, check=True, cwd=cwd, stdout=subprocess.PIPE if quiet else None, stderr=subprocess.PIPE if quiet else None, text=True)
     except FileNotFoundError: die(f"Required command not found: {cmd[0]}")
     except subprocess.CalledProcessError as e:
-        print(e.stderr.strip(), file=sys.stderr); die(f"Command failed: {' '.join(cmd)}")
+        if quiet and e.stderr: print(e.stderr.strip(), file=sys.stderr)
+        die(f"Command failed: {' '.join(cmd)}")
 
-def require_commands():
-    for c in ("curl", "unzip"):
+def require_commands(upload=False):
+    for c in ("curl", "unzip") + (("git",) if upload else ()):
         if shutil.which(c) is None: die(f"{c} is required")
 
 def norm(v):
@@ -61,10 +68,8 @@ def tag_map(db):
 def strings(v, tm):
     if isinstance(v, (str, int, float)):
         s = str(v).lower(); return [s] + ([tm[s]] if s in tm else [])
-    if isinstance(v, list):
-        return sum((strings(x, tm) for x in v), [])
-    if isinstance(v, dict):
-        return sum((strings(k, tm) + strings(x, tm) for k, x in v.items()), [])
+    if isinstance(v, list): return sum((strings(x, tm) for x in v), [])
+    if isinstance(v, dict): return sum((strings(k, tm) + strings(x, tm) for k, x in v.items()), [])
     return []
 
 def beta_entry(meta, tm):
@@ -120,10 +125,81 @@ def files_under(root, prefixes):
             rel = norm(os.path.join(relbase, f))
             if should(rel, prefixes): yield rel, Path(base) / f
 
+def read_token(path):
+    p = Path(path).expanduser()
+    if not p.is_file(): die(f"GitHub token file not found: {p}\nCreate it with your PAT as the only line.")
+    try: os.chmod(p, 0o600)
+    except OSError: pass
+    token = p.read_text(encoding="utf-8").strip()
+    if not token: die(f"GitHub token file is empty: {p}")
+    if any(c.isspace() for c in token): die("GitHub token file must contain the token on one line only")
+    return token
+
+def git_authenticated_env(token):
+    env = os.environ.copy()
+    # git's askpass helper keeps the token out of the remote URL and command line.
+    helper = Path(tempfile.mkstemp(prefix="mister-git-askpass-")[1])
+    helper.write_text("#!/bin/sh\nprintf '%s\\n' \"$GITHUB_TOKEN\"\n", encoding="utf-8")
+    os.chmod(helper, 0o700)
+    env["GITHUB_TOKEN"] = token
+    env["GIT_ASKPASS"] = str(helper)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env, helper
+
+def github_upload(stage, repo, token, sd_root):
+    print("\n[GitHub] Upload requested")
+    print(f"[GitHub] Repository: {repo}")
+    if not stage.is_dir(): die(f"Staging directory does not exist: {stage}")
+    env, helper = git_authenticated_env(token)
+    checkout = sd_root / ".mister_extras_github"
+    try:
+        if (checkout / ".git").is_dir():
+            print("[GitHub] Existing checkout found; pulling latest main...")
+            run(["git", "-c", "credential.helper=", "pull", "--ff-only", "origin", "main"], cwd=checkout, quiet=True)
+        else:
+            if checkout.exists(): shutil.rmtree(checkout)
+            print("[GitHub] First run: cloning repository...")
+            url = f"https://github.com/{repo}.git"
+            run(["git", "clone", "--depth", "1", "--branch", "main", url, str(checkout)], quiet=True)
+        # Configure credentials only for this process. The remote remains a normal https URL.
+        if checkout.exists():
+            run(["git", "config", "credential.helper", ""], cwd=checkout)
+        print("[GitHub] Copying staged extras into repository...")
+        copied = 0
+        for src in stage.rglob("*"):
+            if not src.is_file(): continue
+            rel = src.relative_to(stage)
+            if str(rel) in EXCLUDED_UPLOAD_NAMES or rel.name == ".github_token": continue
+            dst = checkout / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst); copied += 1
+        # Keep generated checksums out of the repository's normal extras tree.
+        checksum = stage / "EXTRAS_SHA256SUMS"
+        if checksum.exists():
+            print("[GitHub] Excluding local checksum/token/report files from upload")
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=checkout, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        if not status.stdout.strip():
+            print("[GitHub] Nothing new to commit.")
+            return
+        print("[GitHub] Staging changes...")
+        run(["git", "add", "-A"], cwd=checkout)
+        message = "Add MiSTer extras from SD card" if not any(checkout.iterdir()) else "Update MiSTer extras from SD card"
+        print(f"[GitHub] Committing: {message}")
+        run(["git", "commit", "-m", message], cwd=checkout, quiet=True)
+        print("[GitHub] Pushing to main...")
+        run(["git", "push", "origin", "main"], cwd=checkout, quiet=True)
+        print(f"[GitHub] Upload complete. {copied:,} staged files processed.")
+    finally:
+        try: helper.unlink(missing_ok=True)
+        except Exception: pass
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sd", default=DEFAULT_SD)
     ap.add_argument("--stage", action="store_true")
+    ap.add_argument("--upload", action="store_true", help="After staging, commit and push extras to the ButtHole GitHub repository")
+    ap.add_argument("--github-repo", default=DEFAULT_GITHUB_REPO)
+    ap.add_argument("--token-file", default=DEFAULT_TOKEN_FILE)
     ap.add_argument("--output")
     ap.add_argument("--report")
     ap.add_argument("--include-prefix", action="append", default=[])
@@ -133,9 +209,11 @@ def main():
     ap.add_argument("--all-files", action="store_true", help="Deprecated compatibility alias; full recursive scanning is now the default")
     ap.add_argument("--no-hash", action="store_true")
     a = ap.parse_args()
+    if a.upload and not a.stage: die("--upload requires --stage")
     root = Path(a.sd).resolve()
     if not root.is_dir(): die(f"SD path does not exist: {root}")
-    require_commands()
+    require_commands(a.upload)
+    token = read_token(a.token_file) if a.upload else None
     scan_all = not a.distribution_only
     prefixes = ("",) if scan_all else tuple(DEFAULT_PREFIXES) + tuple(norm(x).rstrip("/") + "/" for x in a.include_prefix)
     if scan_all and a.include_prefix:
@@ -153,8 +231,7 @@ def main():
             print(f"[DB] {name}")
             p = work / (name + ".db"); download(url, p)
             dbs.append((name, url, load_db(p)))
-        public = {}
-        counts = {}
+        public = {}; counts = {}
         for n, u, db in dbs:
             e = extract(db, n); counts[n] = len(e)
             for p, m in e.items():
@@ -176,20 +253,22 @@ def main():
             if cat == "public": public_count += 1
             elif cat == "modified": modified.append({"path":rel,"size":size,"public_size":p.get("size") if p else None,"public_hash":p.get("hash") if p else None})
             else:
-                extra_bytes += size
-                item={"path":rel,"size":size}
+                extra_bytes += size; item={"path":rel,"size":size}
                 (large if size >= a.max_file_mb*1024*1024 else extras).append(item)
         report={"format":1,"generated_at":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"sd_path":str(root),"scan_mode":"all_files" if scan_all else "distribution_only","public_databases":[{"name":n,"url":u,"entries":counts[n]} for n,u,_ in dbs],"scan_prefixes":list(prefixes),"summary":{"scanned":scanned,"public":public_count,"modified":len(modified),"extras":len(extras),"large_extras_not_staged":len(large),"extra_bytes":extra_bytes},"extras":extras,"modified":modified,"large_extras":large}
         report_path.write_text(json.dumps(report, indent=2, sort_keys=True)+"\n", encoding="utf-8")
         print(f"Scanned {scanned:,} | public {public_count:,} | modified {len(modified):,} | extras {len(extras):,} | large {len(large):,}")
         print(f"Extra size: {extra_bytes/1024**3:.2f} GiB")
         print(f"Report: {report_path}")
-        if not a.stage: print("Dry run: nothing copied. Re-run with --stage after reviewing the report."); return
+        if not a.stage:
+            print("Dry run: nothing copied. Re-run with --stage after reviewing the report."); return
         stage.mkdir(parents=True, exist_ok=True); lines=[]
         for item in extras:
             rel=item["path"]; src=root/rel; dst=stage/rel; dst.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(src,dst); lines.append(f"{sha256(src)}  {rel}")
         (stage/"EXTRAS_SHA256SUMS").write_text("\n".join(sorted(lines))+(("\n") if lines else ""), encoding="utf-8")
         print(f"Staged {len(extras):,} files to {stage}")
         if large: print(f"{len(large)} files were not staged because they exceed the configured Git-safe size.")
+        if a.upload:
+            github_upload(stage, a.github_repo, token, root)
     finally: shutil.rmtree(work, ignore_errors=True)
 if __name__ == "__main__": main()
