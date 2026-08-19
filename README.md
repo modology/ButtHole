@@ -22,7 +22,7 @@ cd /media/fat/Scripts
 bash ./mister_extras_scan.sh
 ```
 
-The first run is a **dry run**. It downloads the public database manifests, scans distribution-like directories, and writes:
+The first run is a **dry run**. It downloads the public database manifests and, by default, scans **the entire `/media/fat` SD card recursively**. It writes:
 
 ```text
 /media/fat/mister_extras_report.json
@@ -42,6 +42,24 @@ By default, staging goes to:
 
 The scanner does not upload anything to GitHub.
 
+### Scan scope
+
+**Everything is scanned by default.** The scanner no longer limits discovery to `_Arcade`, `_Console`, `_Computer`, `cores`, `Scripts`, or other MiSTer distribution-like directories. Personal ROM collections and other files anywhere under `/media/fat` are included in the scan.
+
+The old full-scan option remains accepted as a compatibility alias:
+
+```bash
+bash ./mister_extras_scan.sh --all-files
+```
+
+If you specifically want the old restricted behaviour, use:
+
+```bash
+bash ./mister_extras_scan.sh --distribution-only
+```
+
+The scanner still avoids copying the generated report and the `MiSTer_Extras` staging directory into themselves. Files at or above 95 MiB are reported but not staged by default. GitHub's normal Git file limit is 100 MiB, so these files need a different distribution method.
+
 ## Public baseline
 
 The default comparison sources are:
@@ -58,18 +76,6 @@ bash ./mister_extras_scan.sh \
 ```
 
 The scanner intentionally does **not** blindly trust the MiSTer's `downloader.ini`, because a user's `downloader.ini` can contain premium/beta databases.
-
-## Important: personal ROMs and large files
-
-The default scan is restricted to MiSTer distribution-like directories such as `_Arcade`, `_Console`, `_Computer`, `cores`, and `Scripts`. It does not automatically stage arbitrary personal ROM collections.
-
-To scan everything:
-
-```bash
-bash ./mister_extras_scan.sh --all-files
-```
-
-Files at or above 95 MiB are reported but not staged by default. GitHub's normal Git file limit is 100 MiB, so these files need a different distribution method.
 
 ## Workflow
 
