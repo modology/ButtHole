@@ -44,27 +44,58 @@ The scanner does not upload anything unless `--upload` is explicitly supplied.
 
 ## Automatic GitHub upload
 
-To stage the detected extras and automatically commit and push them to this repository:
+If you are a friend contributing files to this database, you must set up the GitHub token **before running the scanner with `--upload`**.
 
-```bash
-bash ./mister_extras_scan.sh --stage --upload
+### 1. Copy `.github_token` to the MiSTer
+
+You will be given a file named:
+
+```text
+.github_token
 ```
 
-The first upload automatically clones `modology/ButtHole` into a local working directory on the MiSTer. Later uploads reuse that checkout and pull the latest `main` before pushing.
-
-The scanner uses a GitHub fine-grained Personal Access Token stored locally on the MiSTer. **Never commit the token to this repository.** Create:
+Copy it to **exactly** this location on your MiSTer SD card:
 
 ```text
 /media/fat/Scripts/.github_token
 ```
 
-and put the token on a single line in that file. The script restricts the token file to mode `600` where the filesystem permits it and keeps the token out of Git URLs, reports, commit messages, and uploaded files.
+The file must contain the GitHub fine-grained Personal Access Token on a single line. Do not rename the file and do not put it inside `MiSTer_Extras`.
 
-For this repository, the token only needs `Contents: Read and write` access to `modology/ButtHole`.
+If necessary, set its permissions with:
 
-During upload the script displays progress for cloning/pulling, copying, staging, committing, and pushing. If there are no changes, it reports that there is nothing new to commit.
+```bash
+chmod 600 /media/fat/Scripts/.github_token
+```
 
-The generated local token file, scanner report, and checksum file are explicitly excluded from the GitHub upload.
+**This token is what gives the scanner permission to commit and push your detected extra files to the `modology/ButtHole` GitHub repository on behalf of the repository owner.** The token should have `Contents: Read and write` permission for `modology/ButtHole`.
+
+Treat the token as a secret. Anyone who obtains a copy of it may be able to modify the repository with the permissions granted to that token. Never upload the token to GitHub or include it in a report, screenshot, forum post, or commit.
+
+### 2. Run the scanner and upload
+
+Once `.github_token` is in place, run:
+
+```bash
+cd /media/fat/Scripts
+bash ./mister_extras_scan.sh --stage --upload
+```
+
+The scanner will:
+
+1. Scan the entire `/media/fat` SD card.
+2. Compare files against the configured public MiSTer databases.
+3. Stage files identified as extras.
+4. Automatically clone `modology/ButtHole` on the first upload.
+5. Copy the staged extras into the repository.
+6. Create a Git commit.
+7. Push the commit to the repository's `main` branch.
+
+On later runs, the existing local checkout is reused and updated before pushing.
+
+The scanner displays progress while cloning/pulling, copying, staging, committing, and pushing. If there are no changes, it reports that there is nothing new to commit.
+
+The scanner uses the token only locally. It keeps the token out of Git URLs, reports, commit messages, and uploaded files. The `.github_token` file, scanner report, and local checksum file are explicitly excluded from the GitHub upload.
 
 ## Scan scope
 
