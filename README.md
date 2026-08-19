@@ -40,9 +40,33 @@ By default, staging goes to:
 /media/fat/MiSTer_Extras/
 ```
 
-The scanner does not upload anything to GitHub.
+The scanner does not upload anything unless `--upload` is explicitly supplied.
 
-### Scan scope
+## Automatic GitHub upload
+
+To stage the detected extras and automatically commit and push them to this repository:
+
+```bash
+bash ./mister_extras_scan.sh --stage --upload
+```
+
+The first upload automatically clones `modology/ButtHole` into a local working directory on the MiSTer. Later uploads reuse that checkout and pull the latest `main` before pushing.
+
+The scanner uses a GitHub fine-grained Personal Access Token stored locally on the MiSTer. **Never commit the token to this repository.** Create:
+
+```text
+/media/fat/Scripts/.github_token
+```
+
+and put the token on a single line in that file. The script restricts the token file to mode `600` where the filesystem permits it and keeps the token out of Git URLs, reports, commit messages, and uploaded files.
+
+For this repository, the token only needs `Contents: Read and write` access to `modology/ButtHole`.
+
+During upload the script displays progress for cloning/pulling, copying, staging, committing, and pushing. If there are no changes, it reports that there is nothing new to commit.
+
+The generated local token file, scanner report, and checksum file are explicitly excluded from the GitHub upload.
+
+## Scan scope
 
 **Everything is scanned by default.** The scanner no longer limits discovery to `_Arcade`, `_Console`, `_Computer`, `cores`, `Scripts`, or other MiSTer distribution-like directories. Personal ROM collections and other files anywhere under `/media/fat` are included in the scan.
 
