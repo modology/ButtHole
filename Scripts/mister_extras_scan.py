@@ -2,8 +2,9 @@
 """MiSTer Extras Scanner.
 
 Scans a MiSTer SD card and compares files against selected public Downloader
-DB manifests. It reports public, modified, and extra files and can stage the
-extras for review. It never uploads anything by itself.
+DB manifests. By default it scans the entire SD card recursively. It reports
+public, modified, and extra files and can stage the extras for review. It
+never uploads anything by itself.
 """
 import argparse, hashlib, json, os, shutil, subprocess, sys, tempfile, time, urllib.request, zipfile
 from pathlib import Path
@@ -15,7 +16,6 @@ PUBLIC_DBS = [
 ]
 DEFAULT_SD = "/media/fat"
 DEFAULT_PREFIXES = ("_Arcade/", "_Console/", "_Computer/", "_Other/", "cores/", "Scripts/", "MiSTer/", "games/")
-EXCLUDED_PREFIXES = ("Scripts/.config/", "Scripts/.cache/", "System Volume Information/", ".Trashes/", ".Spotlight-V100/", "lost+found/")
 DEFAULT_MAX_FILE_MB = 95
 BETA_WORDS = ("jtbeta", "beta", "patreon", "premium")
 
@@ -106,7 +106,7 @@ def sha256(path):
 
 def should(rel, prefixes):
     rel = norm(rel)
-    return not any(rel.startswith(x) for x in EXCLUDED_PREFIXES) and any(rel.startswith(x) for x in prefixes)
+    return not any(rel.startswith(x) for x in ("Scripts/.config/", "Scripts/.cache/", "System Volume Information/", ".Trashes/", ".Spotlight-V100/", "lost+found/")) and any(rel.startswith(x) for x in prefixes)
 
 def files_under(root, prefixes):
     for base, dirs, files in os.walk(root):
@@ -114,7 +114,6 @@ def files_under(root, prefixes):
         keep = []
         for d in dirs:
             p = norm(os.path.join(relbase, d)) + "/"
-            if any(p.startswith(x) for x in EXCLUDED_PREFIXES): continue
             if any(x == "" or x.startswith(p) or p.startswith(x) for x in prefixes): keep.append(d)
         dirs[:] = keep
         for f in files:
@@ -130,13 +129,17 @@ def main():
     ap.add_argument("--include-prefix", action="append", default=[])
     ap.add_argument("--public-db", action="append", default=[])
     ap.add_argument("--max-file-mb", type=float, default=DEFAULT_MAX_FILE_MB)
-    ap.add_argument("--all-files", action="store_true")
+    ap.add_argument("--distribution-only", action="store_true", help="Restrict scanning to the traditional MiSTer distribution directories instead of scanning the entire SD card")
+    ap.add_argument("--all-files", action="store_true", help="Deprecated compatibility alias; full recursive scanning is now the default")
     ap.add_argument("--no-hash", action="store_true")
     a = ap.parse_args()
     root = Path(a.sd).resolve()
     if not root.is_dir(): die(f"SD path does not exist: {root}")
     require_commands()
-    prefixes = ("",) if a.all_files else tuple(DEFAULT_PREFIXES) + tuple(norm(x).rstrip("/") + "/" for x in a.include_prefix)
+    scan_all = not a.distribution_only
+    prefixes = ("",) if scan_all else tuple(DEFAULT_PREFIXES) + tuple(norm(x).rstrip("/") + "/" for x in a.include_prefix)
+    if scan_all and a.include_prefix:
+        print("Note: --include-prefix is ignored when scanning the entire SD card (the default). Use --distribution-only to apply prefix filters.")
     report_path = Path(a.report) if a.report else root / "mister_extras_report.json"
     stage = Path(a.output) if a.output else root / "MiSTer_Extras"
     sources = list(PUBLIC_DBS)
@@ -145,6 +148,7 @@ def main():
     work = Path(tempfile.mkdtemp(prefix="mister-extras-")); dbs = []
     try:
         print("MiSTer Extras Scanner\n======================")
+        print("Scan scope: ENTIRE SD CARD" if scan_all else "Scan scope: distribution directories only")
         for name, url in sources:
             print(f"[DB] {name}")
             p = work / (name + ".db"); download(url, p)
@@ -157,12 +161,14 @@ def main():
                 if p not in public or (public[p].get("hash") is None and m.get("hash")): public[p] = m
         print(f"Public index: {len(public):,} entries")
         extras=[]; modified=[]; public_count=0; scanned=0; large=[]; extra_bytes=0
+        report_rel = norm(str(report_path.relative_to(root))) if report_path.is_relative_to(root) else None
+        stage_abs = stage.resolve()
         for rel, path in files_under(root, prefixes):
-            if rel == norm(str(report_path.relative_to(root))): continue
+            if report_rel and rel == report_rel: continue
             try:
-                if path.is_relative_to(stage): continue
+                if path.resolve().is_relative_to(stage_abs): continue
             except AttributeError:
-                if str(path).startswith(str(stage) + os.sep): continue
+                if str(path.resolve()).startswith(str(stage_abs) + os.sep): continue
             scanned += 1; size = path.stat().st_size; p = public.get(rel)
             if p is None: cat="extra"
             elif p.get("size") is not None and int(p["size"]) == size and (a.no_hash or not p.get("hash") or md5(path) == p["hash"]): cat="public"
@@ -173,7 +179,7 @@ def main():
                 extra_bytes += size
                 item={"path":rel,"size":size}
                 (large if size >= a.max_file_mb*1024*1024 else extras).append(item)
-        report={"format":1,"generated_at":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"sd_path":str(root),"public_databases":[{"name":n,"url":u,"entries":counts[n]} for n,u,_ in dbs],"scan_prefixes":list(prefixes),"summary":{"scanned":scanned,"public":public_count,"modified":len(modified),"extras":len(extras),"large_extras_not_staged":len(large),"extra_bytes":extra_bytes},"extras":extras,"modified":modified,"large_extras":large}
+        report={"format":1,"generated_at":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"sd_path":str(root),"scan_mode":"all_files" if scan_all else "distribution_only","public_databases":[{"name":n,"url":u,"entries":counts[n]} for n,u,_ in dbs],"scan_prefixes":list(prefixes),"summary":{"scanned":scanned,"public":public_count,"modified":len(modified),"extras":len(extras),"large_extras_not_staged":len(large),"extra_bytes":extra_bytes},"extras":extras,"modified":modified,"large_extras":large}
         report_path.write_text(json.dumps(report, indent=2, sort_keys=True)+"\n", encoding="utf-8")
         print(f"Scanned {scanned:,} | public {public_count:,} | modified {len(modified):,} | extras {len(extras):,} | large {len(large):,}")
         print(f"Extra size: {extra_bytes/1024**3:.2f} GiB")
