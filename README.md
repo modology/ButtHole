@@ -13,107 +13,89 @@ db_url = https://raw.githubusercontent.com/modology/ButtHole/db/db.json.zip
 
 to `/media/fat/downloader.ini`, or use the generated drop-in `.ini` file.
 
-## Scanner
+## MiSTer Script Menu
 
-The scanner is intended to run directly on a MiSTer:
+The two main scripts are designed to be launched directly from the MiSTer **Scripts** menu. No command-line options are required for normal use.
 
-```bash
-cd /media/fat/Scripts
-bash ./mister_extras_scan.sh
-```
+### Upload scanner
 
-The first run is a **dry run**. It downloads the public database manifests and, by default, scans **the entire `/media/fat` SD card recursively**. It writes:
+Launch:
 
 ```text
-/media/fat/mister_extras_report.json
+mister_extras_scan.sh
 ```
 
-Review that report. To stage the detected extras:
+The scanner will automatically:
 
-```bash
-bash ./mister_extras_scan.sh --stage
-```
+1. Scan the **entire `/media/fat` SD card recursively**.
+2. Compare files against the configured public MiSTer databases.
+3. Stage detected extras in `/media/fat/MiSTer_Extras/`.
+4. Show the scan/staging results.
+5. Ask whether you want to commit the staged files to GitHub.
+6. If you answer **Yes**, clone/pull `modology/ButtHole`, copy the staged files, create a Git commit, and push to `main`.
+7. If you answer **No**, nothing is uploaded and the staged files remain on the SD card.
 
-By default, staging goes to:
+There is deliberately no automatic GitHub push without asking first.
 
-```text
-/media/fat/MiSTer_Extras/
-```
+### First-time setup: GitHub token
 
-The scanner does not upload anything unless `--upload` is explicitly supplied.
-
-## Automatic GitHub upload
-
-If you are a friend contributing files to this database, you must set up the GitHub token **before running the scanner with `--upload`**.
-
-### 1. Copy `.github_token` to the MiSTer
-
-You will be given a file named:
+Before using the scanner's GitHub upload option, copy the supplied file:
 
 ```text
 .github_token
 ```
 
-Copy it to **exactly** this location on your MiSTer SD card:
+to **exactly**:
 
 ```text
 /media/fat/Scripts/.github_token
 ```
 
-The file must contain the GitHub fine-grained Personal Access Token on a single line. Do not rename the file and do not put it inside `MiSTer_Extras`.
-
-If necessary, set its permissions with:
+The file must contain the GitHub fine-grained Personal Access Token on a single line. If necessary:
 
 ```bash
 chmod 600 /media/fat/Scripts/.github_token
 ```
 
-**This token is what gives the scanner permission to commit and push your detected extra files to the `modology/ButtHole` GitHub repository on behalf of the repository owner.** The token should have `Contents: Read and write` permission for `modology/ButtHole`.
+**This token gives the scanner permission to commit and push your detected extra files to the `modology/ButtHole` GitHub repository on behalf of the repository owner.** The token should have `Contents: Read and write` permission for `modology/ButtHole` only.
 
-Treat the token as a secret. Anyone who obtains a copy of it may be able to modify the repository with the permissions granted to that token. Never upload the token to GitHub or include it in a report, screenshot, forum post, or commit.
+Treat the token as a secret. Anyone who obtains it may be able to modify the repository with the permissions granted to that token. Never put the token into the repository, a screenshot, a report, or a forum post.
 
-### 2. Run the scanner and upload
+The scanner temporarily moves the token out of `/media/fat` while scanning so it cannot accidentally be classified as an extra. The local Git checkout is also temporarily moved out of the scan area. The token is never copied into the repository, report, commit, or staged extras.
 
-Once `.github_token` is in place, run:
+### Pull latest files
 
-```bash
-cd /media/fat/Scripts
-bash ./mister_extras_scan.sh --stage --upload
+To download the latest files from the ButtHole repository directly from the MiSTer Scripts menu, launch:
+
+```text
+mister_extras_pull.sh
 ```
 
-The scanner will:
+The pull script uses the same `.github_token`, downloads the latest `main` branch, and copies the repository files onto `/media/fat`. Git metadata, `.github_token`, the scanner report, and the local checksum file are not copied to the SD card.
 
-1. Scan the entire `/media/fat` SD card.
-2. Compare files against the configured public MiSTer databases.
-3. Stage files identified as extras.
-4. Automatically clone `modology/ButtHole` on the first upload.
-5. Copy the staged extras into the repository.
-6. Create a Git commit.
-7. Push the commit to the repository's `main` branch.
+This makes it easy for you and your friends to pull the latest files from the shared repository without using a computer or typing Git commands.
 
-On later runs, the existing local checkout is reused and updated before pushing.
+## Scanner details
 
-The scanner displays progress while cloning/pulling, copying, staging, committing, and pushing. If there are no changes, it reports that there is nothing new to commit.
+The scanner's Python backend can still be called manually for advanced/debugging use, but this is not required for normal MiSTer menu operation.
 
-The scanner uses the token only locally. It keeps the token out of Git URLs, reports, commit messages, and uploaded files. The `.github_token` file, scanner report, and local checksum file are explicitly excluded from the GitHub upload.
+The scanner writes its report to:
+
+```text
+/media/fat/mister_extras_report.json
+```
+
+Files at or above 95 MiB are reported but not staged by default. GitHub's normal Git file limit is 100 MiB, so these files need a different distribution method.
 
 ## Scan scope
 
 **Everything is scanned by default.** The scanner no longer limits discovery to `_Arcade`, `_Console`, `_Computer`, `cores`, `Scripts`, or other MiSTer distribution-like directories. Personal ROM collections and other files anywhere under `/media/fat` are included in the scan.
 
-The old full-scan option remains accepted as a compatibility alias:
+The old restricted behaviour is still available to advanced users with:
 
 ```bash
-bash ./mister_extras_scan.sh --all-files
+python3 /media/fat/Scripts/mister_extras_scan.py --distribution-only
 ```
-
-If you specifically want the old restricted behaviour, use:
-
-```bash
-bash ./mister_extras_scan.sh --distribution-only
-```
-
-The scanner still avoids copying the generated report and the `MiSTer_Extras` staging directory into themselves. Files at or above 95 MiB are reported but not staged by default. GitHub's normal Git file limit is 100 MiB, so these files need a different distribution method.
 
 ## Public baseline
 
@@ -123,12 +105,7 @@ The default comparison sources are:
 - Jotego JT cores, with beta/premium/patreon-tagged entries excluded
 - Coin-Op Collection MiSTer distribution
 
-Additional **public** databases can be supplied:
-
-```bash
-bash ./mister_extras_scan.sh \
-  --public-db "example=https://example.com/db.json.zip"
-```
+Additional **public** databases can be supplied to the Python backend for advanced use.
 
 The scanner intentionally does **not** blindly trust the MiSTer's `downloader.ini`, because a user's `downloader.ini` can contain premium/beta databases.
 
